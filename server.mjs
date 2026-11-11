@@ -45,8 +45,48 @@ function clientIp(req) {
   return xff || req.socket.remoteAddress || '';
 }
 
+function isPageRequest(req) {
+  if (req.method !== 'GET' || req.url.startsWith(PREFIX)) return false;
+  const dest = req.headers['sec-fetch-dest'];
+  if (dest) return dest === 'document';
+  return String(req.headers.accept || '').includes('text/html');
+}
+
+function checkPage(url) {
+  const path = JSON.stringify(url).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meax</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#141218;color:#e6e0e9;font:16px system-ui,sans-serif}</style></head>
+<body><p>Meax に接続しています…</p>
+<script>
+(function () {
+  var path = ${path}, done = false;
+  function go(direct) {
+    if (done) return; done = true;
+    if (direct) { location.replace('https://${MAIN}' + path); return; }
+    document.cookie = 'px_ok=1; max-age=20; path=/; samesite=lax';
+    location.replace(path);
+  }
+  var img = new Image();
+  img.onload = function () { go(true); };
+  img.onerror = function () { go(false); };
+  setTimeout(function () { go(false); }, 3000);
+  img.src = 'https://${MAIN}/icon.png?c=' + Date.now();
+})();
+</script>
+<noscript><meta http-equiv="refresh" content="0;url=/_p/go"></noscript></body></html>`;
+}
+
 const server = http.createServer((req, res) => {
+  if (req.url === '/_p/go') { res.writeHead(302, { location: '/', 'set-cookie': 'px_ok=1; Max-Age=20; Path=/; SameSite=Lax' }); return res.end(); }
   if (req.url === '/_p/health') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
+
+  // ページを開くたびに、見ている人のブラウザから本体（meax.jp）が開けるかを確かめる。
+  // 開ければ本体へ移動、開けなければ（学校のフィルターなど）そのままプロキシで表示する。
+  // 判定の結果は20秒だけクッキーに持つ（同じページの読み込み直しで無限に確かめないため）。
+  if (isPageRequest(req) && !/(?:^|;\s*)px_ok=1/.test(req.headers.cookie || '')) {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(checkPage(req.url));
+  }
 
   let host = MAIN;
   let path = req.url;
